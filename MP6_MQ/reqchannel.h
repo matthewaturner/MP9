@@ -60,12 +60,12 @@ private:
 
   /*  The current implementation uses named pipes. */ 
 
-  int wfd;
-  int rfd;
+  struct my_msgbuf {
+    long mtype;
+    char mtext[255];
+  } buf;
 
-  char * pipe_name(Mode _mode);
-  void open_read_pipe(char * _pipe_name);
-  void open_write_pipe(char * _pipe_name);
+  int msgqid;
 
 public:
 
@@ -88,10 +88,6 @@ public:
      request channels to 125.
   */
 
-  ~RequestChannel();
-  /* Destructor of the local copy of the bus. By default, the Server Side deletes any IPC 
-     mechanisms associated with the channel. */
-
   string send_request(string _request);
   /* Send a string over the channel and wait for a reply. */
 
@@ -106,11 +102,6 @@ public:
   string name();
   /* Returns the name of the request channel. */
 
-  int read_fd();
-  /* Returns the file descriptor used to read from the channel. */
-
-  int write_fd();
-  /* Returns the file descriptor used to write to the channel. */
 };
 
 

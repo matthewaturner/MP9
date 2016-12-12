@@ -29,10 +29,14 @@
 #include <stdio.h>
 
 #include <errno.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
 
 #include "reqchannel.h"
 
 using namespace std;
+
+#define MSGPERM 0600    // msg queue permission
 
 /*--------------------------------------------------------------------------*/
 /* DATA STRUCTURES */ 
@@ -56,104 +60,24 @@ using namespace std;
 /* PRIVATE METHODS FOR CLASS   R e q u e s t C h a n n e l  */
 /*--------------------------------------------------------------------------*/
 
-char * RequestChannel::pipe_name(Mode _mode) {
-  string pname = "fifo_" + my_name;
-
-  if (my_side == CLIENT_SIDE) {
-    if (_mode == READ_MODE) 
-      pname += "1";
-    else
-      pname += "2";
-  } else {
-    /* SERVER_SIDE */
-    if (_mode == READ_MODE) 
-      pname += "2";
-    else 
-      pname += "1";
-  }
-  char * result = new char[pname.size()+1];
-  strncpy(result, pname.c_str(), pname.size()+1);
-  return result;
-}
-
-void RequestChannel::open_write_pipe(char * _pipe_name) {
-
-  //  cout << "mkfifo write pipe\n" << flush;
-
-  if (mkfifo(_pipe_name, 0600) < 0) {
-    if (errno != EEXIST) {
-      perror("Error creating pipe for writing; exit program");
-      exit(1);
-    }
-  }
-
-  // cout << "open write pipe\n" << flush;
-
-  wfd = open(_pipe_name, O_WRONLY);
-  if (wfd < 0) {
-    perror("Error opening pipe for writing; exit program");
-    exit(1);
-  }
-
-  //  cout << "done opening write pipe\n" << flush;
-
-}
-
-void RequestChannel::open_read_pipe(char * _pipe_name) {
-
-  //  cout << "mkfifo read pipe\n" << flush;
-
-  if (mkfifo(_pipe_name, 0600) < 0) {
-    if (errno != EEXIST) {
-      perror("Error creating pipe for writing; exit program");
-      exit(1);
-    }
-  }
-
-  //  cout << "open read pipe\n" << flush;
-
-  rfd = open(_pipe_name, O_RDONLY);
-  if (rfd < 0) {
-    perror("Error opening pipe for reading; exit program");
-    exit(1);
-  }
-
-  //  cout << "done opening read pipe\n" << flush;
-
-}
-
 /*--------------------------------------------------------------------------*/
 /* CONSTRUCTOR/DESTRUCTOR FOR CLASS   R e q u e s t C h a n n e l  */
 /*--------------------------------------------------------------------------*/
 
 RequestChannel::RequestChannel(const string _name, const Side _side) : my_name(_name), my_side(_side) {
 
-  if (_side == SERVER_SIDE) {
-    open_write_pipe(pipe_name(WRITE_MODE));
-    open_read_pipe(pipe_name(READ_MODE));
-  } else {
-    open_read_pipe(pipe_name(READ_MODE));
-    open_write_pipe(pipe_name(WRITE_MODE));
+  // Creates message queue
+  msgqid = msgget(IPC_PRIVATE, MSGPERM|IPC_CREAT|IPC_EXCL);
+  
+  if (msgqid < 0)
+  {
+    perror("\n[msgget error]\n");
+    printf("Failed to create message queue with msgqid = %d\n", msgqid);
+    exit(1);
   }
+  
+  //printf("Message queue %d created\n",msgqid);
 
-}
-
-RequestChannel::~RequestChannel() {
-  //cout << "close requests channel " << my_name << endl;
-  close(wfd);
-  close(rfd);
-  if (my_side == SERVER_SIDE) {
-    //cout << "close IPC mechanisms on server side for channel " << my_name << endl;
-    /* Destruct the underlying IPC mechanisms. */
-    if (remove(pipe_name(READ_MODE)) != 0) {
-      perror(string("Request Channel (" + my_name + ") : Error deleting pipe for reading").c_str());
-    }
-      
-    if (remove(pipe_name(WRITE_MODE)) != 0) {
-      perror(string("Request Channel (" + my_name + ") : Error deleting pipe for writing").c_str());
-    }
-      //cout << "Bye y'all" << flush << endl;
-  }
 }
 
 /*--------------------------------------------------------------------------*/
@@ -170,36 +94,36 @@ string RequestChannel::send_request(string _request) {
 
 string RequestChannel::cread() {
 
-  char buf[MAX_MESSAGE];
-
-  if (read(rfd, buf, MAX_MESSAGE) < 0) {
-    perror(string("Request Channel (" + my_name + "): Error reading from pipe!").c_str());
+  if (msgrcv(msgqid, &buf, sizeof buf.mtext, 0, 0) < 0)
+  {
+      perror("\n[msgrcv error]\n");
+      exit(1);
   }
-  
-  string s = buf;
-
-  //  cout << "Request Channel (" << my_name << ") reads [" << buf << "]\n";
-
+  //printf("\nReceived: %s\n", buf.mtext);
+  string s = buf.mtext;
   return s;
-
 }
 
 int RequestChannel::cwrite(string _msg) {
 
-  if (_msg.length() >= MAX_MESSAGE) {
+  if (_msg.length() >= MAX_MESSAGE)
+  {
     cerr << "Message too long for Channel!\n";
     return -1;
   }
 
-  //  cout << "Request Channel (" << my_name << ") writing [" << _msg << "]";
+  buf.mtype = 1;
+  strncpy(buf.mtext, _msg.c_str(), sizeof(buf.mtext));
+  //printf("Message queue here write: %d \n",msgqid);
 
-  const char * s = _msg.c_str();
-
-  if (write(wfd, s, strlen(s)+1) < 0) {
-    perror(string("Request Channel (" + my_name + ") : Error writing to pipe!").c_str());
+  int rc = msgsnd(msgqid, &buf, sizeof(buf.mtext), 0); // the last param can be: 0, IPC_NOWAIT, MSG_NOERROR, or IPC_NOWAIT|MSG_NOERROR.
+  if (rc < 0)
+  {
+    perror( strerror(errno) );
+    printf("\n[msgsnd failed]\t rc = %d\n", rc);
+    exit(1);
   }
-
-  //  cout << "(" << my_name << ") done writing." << endl;
+  //printf("\nSent msg: %s\n", buf.mtext);
 }
 
 /*--------------------------------------------------------------------------*/
@@ -208,18 +132,6 @@ int RequestChannel::cwrite(string _msg) {
 
 string RequestChannel::name() {
   return my_name;
-}
-
-/*--------------------------------------------------------------------------*/
-/* ACCESS FILE DESCRIPTORS OF REQUEST CHANNEL  */
-/*--------------------------------------------------------------------------*/
-
-int RequestChannel::read_fd() {
-  return rfd;
-}
-
-int RequestChannel::write_fd() {
-  return wfd;
 }
 
 
